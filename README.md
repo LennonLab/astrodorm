@@ -15,3 +15,4 @@ A simple individual-based model to explore these ideas where an autocatalytic mo
   * PopFig_20240727_2309.R - Code to generate a figure of the abundance of the autocatalytic molecule as its decay rate in dormancy varies
   * PopFig_20240809.Rmd - Code to generate a figure of the log_10(abundance) of the autocatalytic molecule as its decay rate in dormancy varies
   * Ratio_20240809.Rmd - Code to generate a figure examining the ratio of active molecules to total molecules as stochastic transitions to dormancy and the number of catalysts vary
+  * AverageShielding.csv - The csv file output from NewMod_20240723_1413_AvgPop.R. Used in PopFig_20240809.Rmd
