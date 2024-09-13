@@ -1,0 +1,956 @@
+---
+  title: "Chemical dormancy"
+author: "Kevin D. Webster and Jay T. Lennon"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+header-includes:
+  - \usepackage{array}
+output: pdf_document
+geometry: margin = 2.54cm
+---
+  
+##An individual based model to examine dormancy, activity, death, birth
+
+```{r}
+rm(list=ls())
+getwd()
+setwd(getwd())
+#setwd("~/GitHub/astrodorm/")
+```
+
+# Load packages
+```{r}
+require("png")
+require("dplyr")
+library("tidyverse")
+require("grid")
+require("tibble")
+require("knitr")
+require("extrafont")
+require("ggrepel");
+require("gridExtra")
+require("contrast")
+sem <- function(x) sqrt(var(x)/length(x))
+cv <- function(x) (sd(x)/mean(x))*100
+```
+
+# Set up individual based model
+```{r setup}
+
+InDiMo <- function(ts, ip, cm, ad, da, de, ds, br, ae) {
+  # ts = time steps 
+  # ip = initial population
+  # cm = catalytic molecules, cm cannot be 0
+  # ad = stochastic active to dormant transition (%)
+  # da = stochastic dormant to active transition (%)
+  # de = death rate (%)
+  # ds = dormancy stabilizer (divides death rate by some factor)
+  # br = birth rate (%)
+  # ae = autocatalytic enhancement (multiplies birth rate)
+
+  #Create a 20 x 20 grid 
+  H <- matrix(0, 20, 20)
+
+  #Create the number of autocatalytic molecules
+  H[sample(1:400, ip, replace = FALSE)] <- 1
+  length(which(H[,] == 1)) #100
+
+  #create Catalytic molecules
+  B <- cbind(sample(1:20, cm, replace = TRUE), #
+             sample(1:20, cm, replace = TRUE)) #catalytic molecules
+
+  # Random movement in B - Create random movement across model time steps
+
+  #create array of time steps
+  Bt <- array(dim = c(ts,cm,2)) #1000 ts, 200 catlaytic molecules, 2 dimensions
+
+  #initialize array
+  Bt[1,,] <- B
+
+  #move "B" across the environment
+  for (i in 2:ts){   # 
+   Bt[i,,] <- Bt[i-1,,] + cbind(sample(-1:1, cm, replace = TRUE),
+                                sample(-1:1, cm, replace = TRUE))
+   if (min(Bt[i,,]) < 1 & max(Bt[i,,]) <= 20){
+     Bt[i,,][which(Bt[i,,] < 1 )] <- Bt[i,,][which(Bt[i,,] < 1 )] + 1
+    } else if (min(Bt[i,,]) < 1 & max(Bt[i,,]) >= 20){
+      Bt[i,,][which(Bt[i,,] < 1 )] <- Bt[i,,][which(Bt[i,,] < 1 )] + 1
+      Bt[i,,][which(Bt[i,,] > 20 )] <- Bt[i,,][which(Bt[i,,] > 20 )] - 1
+    } else if (max(Bt[i,,]) > 20) {
+      Bt[i,,][which(Bt[i,,] > 20 )] <- Bt[i,,][which(Bt[i,,] > 20 )] - 1
+    }
+    #print(c(i,max(Bt[i,,])))
+  }
+
+  #Make movement more easily compatible with molecule positions
+  BGt <- array(dim = c(ts,20,20))
+
+  #create array to store the data across the time steps
+  for (i in 1:ts){
+   #print(i)
+   BGt[i,,] <- matrix(0, 20, 20)
+   BGt[i,,][Bt[i,,]] <- 1
+}
+
+  #make array of autocatalytic molecules
+  G <- array(dim = c(ts,20,20))
+
+  G[1,,] <- H
+
+  for (i in 2:ts){
+  
+    D <- G[i,,]
+  
+    #decay loop (which autocatalytic molecules decay)
+    for (j in 1:20){
+      for (k in 1:20){
+        dr <- sample(1:100, 1)
+        if (G[i-1,j,k] == 1 & dr <= de){
+          D[j,k] <- 0
+        } else if (G[i-1,j,k] == 2 & dr <= de/ds){ #dormancy stabilizer
+          D[j,k] <- 0 
+        } else {
+          D[j,k] <- G[i-1,j,k]
+        }
+      }
+    }
+  
+    E <- D
+   
+    #dormancy loop (which molecules do dormant?)
+    for (j in 1:20){
+       for (k in 1:20){
+        w <- sample(1:100,1) # sample dormant to active transition
+        v <- sample(1:100,1) # sample active to dormant transition
+      
+        if (BGt[i,j,k] == 1 & D[j,k] > 0) {
+          E[j,k] = 1
+        } else if (D[j,k] == 1 & v > ad) {  #act to dormant trans
+          E[j,k] = 1
+        } else if (D[j,k] == 1 & v <= ad) { #act to dormant trans
+          E[j,k] = 2
+        } else if (D[j,k] == 2 & w > da) { #dorm to act
+          E[j,k] = 2
+        } else if (D[j,k] == 2 & w <= da) { #dorm to act
+          E[j,k] = 1 #dormancy transition loop
+        
+        } 
+      }
+    }
+
+    #autocatalysis loop (which molecules reproduce)
+    l <- NULL
+      for (j in 1:20){
+        for (k in 1:20){
+        s <- sample(1:100, 1)
+        if (E[j,k] == 2) {
+          G[i,j,k] <- 2 #no autocatalysis in dormancy
+        } else if (BGt[i,j,k] == 1 & E[j,k] == 1 & s*ae <= br) { 
+          #catalytic factor
+          l <- rbind(l,c(j,k))
+          G[i,j,k] = 1 
+        } else if (E[j,k] == 1 & s <= br){
+          l <- rbind(l,c(j,k))
+          G[i,j,k] <- 1
+        } else {
+          G[i,j,k] <- E[j,k]
+        }
+      }
+    }
+  
+    # Population cap - population can not be greater than 400
+    if (length(l[,1]) == 100) {
+      G[i,,] <- G[i,,]
+      } else if (length(l[,1]) >= length(which(G[i,,] == 0))) {
+      G[i,,][which(G[i,,] == 0)] <- 1  
+      } else{
+      G[i,,][sample(which(G[i,,] == 0), length(l[,1]))] <- 1
+      }
+  }
+  return(G) #returns array of dormant and active molecules
+
+}  
+
+```
+
+# Run instances of the model to investigate how the ratio of active molecules 
+# to the total population as the stochastic tranistion to dormancy varies and 
+# the number of catalytic molecules vary
+
+# Model runs are commented out. The code takes approximately 7 min to run
+# in total. This portion of the code saves the data to a "csv" file that is 
+# read back into the consol
+
+```{r setup}
+
+# #10 catalytic molecules, 90 % active to dormant transition
+# IDM_10cm_90ad <- InDiMo(1000, 200, 10, 90, 5, 10, 5, 17, 6) 
+# #ts, ip, cm, ad, da, de, ds, br, ae
+# 
+# #create vector to record number of active molecules during each time step
+# a_10cm_90ad <- rep(NA, length(IDM_10cm_90ad[,1,1]))
+# 
+# #Record number of active molecules during each time step
+# for (i in 1:length(IDM_10cm_90ad[,1,1])) {
+#   a_10cm_90ad[i] <- length(which(IDM_10cm_90ad[i,,] == 1))
+# }
+# 
+# #create vector to record number of dormant molecules during each time step
+# d_10cm_90ad <- rep(NA, length(IDM_10cm_90ad[,1,1]))
+# 
+# #Record number of dormant molecules during each time step
+# for (i in 1:length(IDM_10cm_90ad[,1,1])) {
+#   d_10cm_90ad[i] <- length(which(IDM_10cm_90ad[i,,] == 2))
+# }
+# 
+# #50 catalytic molecules, 90 % active to dormant transition
+# IDM_50cm_90ad <- InDiMo(1000, 200, 50, 90, 5, 10, 5, 17, 6) 
+# #ts, ip, cm, ad, da, de, ds, br, ae
+# 
+# #create vector to record number of active molecules during each time step
+# a_50cm_90ad <- rep(NA, length(IDM_50cm_90ad[,1,1]))
+# 
+# #Record number of active molecules during each time step
+# for (i in 1:length(IDM_50cm_90ad[,1,1])) {
+#   a_50cm_90ad[i] <- length(which(IDM_50cm_90ad[i,,] == 1))
+# }
+# 
+# #create vector to record number of dormant molecules during each time step
+# d_50cm_90ad <- rep(NA, length(IDM_50cm_90ad[,1,1]))
+# 
+# #Record number of dormant molecules during each time step
+# for (i in 1:length(IDM_50cm_90ad[,1,1])) {
+#   d_50cm_90ad[i] <- length(which(IDM_50cm_90ad[i,,] == 2))
+# }
+# 
+# #150 catalytic molecules, 90 % active to dormant transition
+# IDM_150cm_90ad <- InDiMo(1000, 200, 150, 90, 5, 10, 5, 17, 6) 
+# #ts, ip, cm, ad, da, de, ds, br, ae
+# 
+# #create vector to record number of active molecules during each time step
+# a_150cm_90ad <- rep(NA, length(IDM_150cm_90ad[,1,1]))
+# 
+# #Record number of active molecules during each time step
+# for (i in 1:length(IDM_150cm_90ad[,1,1])) {
+#   a_150cm_90ad[i] <- length(which(IDM_150cm_90ad[i,,] == 1))
+# }
+# 
+# #create vector to record number of dormant molecules during each time step
+# d_150cm_90ad <- rep(NA, length(IDM_150cm_90ad[,1,1]))
+# 
+# #Record number of dormant molecules during each time step
+# for (i in 1:length(IDM_150cm_90ad[,1,1])) {
+#   d_150cm_90ad[i] <- length(which(IDM_150cm_90ad[i,,] == 2))
+# }
+# 
+# #250 catalytic molecules, 90 % active to dormant transition
+# IDM_250cm_90ad <- InDiMo(1000, 200, 250, 90, 5, 10, 5, 17, 6) 
+# #ts, ip, cm, ad, da, de, ds, br, ae
+# 
+# #create vector to record number of active molecules during each time step
+# a_250cm_90ad <- rep(NA, length(IDM_250cm_90ad[,1,1]))
+# 
+# #Record number of active molecules during each time step
+# for (i in 1:length(IDM_250cm_90ad[,1,1])) {
+#   a_250cm_90ad[i] <- length(which(IDM_250cm_90ad[i,,] == 1))
+# }
+# 
+# #create vector to record number of dormant molecules during each time step
+# d_250cm_90ad <- rep(NA, length(IDM_250cm_90ad[,1,1]))
+# 
+# #Record number of dormant molecules during each time step
+# for (i in 1:length(IDM_250cm_90ad[,1,1])) {
+#   d_250cm_90ad[i] <- length(which(IDM_250cm_90ad[i,,] == 2))
+# }
+# 
+# #350 catalytic molecules, 90 % active to dormant transition
+# IDM_350cm_90ad <- InDiMo(1000, 200, 350, 90, 5, 10, 5, 17, 6) 
+# #ts, ip, cm, ad, da, de, ds, br, ae
+# 
+# #create vector to record number of active molecules during each time step
+# a_350cm_90ad <- rep(NA, length(IDM_350cm_90ad[,1,1]))
+# 
+# #Record number of active molecules during each time step
+# for (i in 1:length(IDM_350cm_90ad[,1,1])) {
+#   a_350cm_90ad[i] <- length(which(IDM_350cm_90ad[i,,] == 1))
+# }
+# 
+# #create vector to record number of dormant molecules during each time step
+# d_350cm_90ad <- rep(NA, length(IDM_350cm_90ad[,1,1]))
+# 
+# #Record number of dormant molecules during each time step
+# for (i in 1:length(IDM_350cm_90ad[,1,1])) {
+#   d_350cm_90ad[i] <- length(which(IDM_350cm_90ad[i,,] == 2))
+# }
+# 
+# #10 catalytic molecules, 75 % active to dormant transition
+# IDM_10cm_75ad <- InDiMo(1000, 200, 10, 75, 5, 10, 5, 17, 6) 
+# #ts, ip, cm, ad, da, de, ds, br, ae
+# 
+# #create vector to record number of active molecules during each time step
+# a_10cm_75ad <- rep(NA, length(IDM_10cm_75ad[,1,1]))
+# 
+# #Record number of active molecules during each time step
+# for (i in 1:length(IDM_10cm_75ad[,1,1])) {
+#   a_10cm_75ad[i] <- length(which(IDM_10cm_75ad[i,,] == 1))
+# }
+# 
+# #create vector to record number of dormant molecules during each time step
+# d_10cm_75ad <- rep(NA, length(IDM_10cm_75ad[,1,1]))
+# 
+# #Record number of dormant molecules during each time step
+# for (i in 1:length(IDM_10cm_75ad[,1,1])) {
+#   d_10cm_75ad[i] <- length(which(IDM_10cm_75ad[i,,] == 2))
+# }
+# 
+# #50 catalytic molecules, 75 % active to dormant transition
+# IDM_50cm_75ad <- InDiMo(1000, 200, 50, 75, 5, 10, 5, 17, 6) 
+# #ts, ip, cm, ad, da, de, ds, br, ae
+# 
+# #create vector to record number of active molecules during each time step
+# a_50cm_75ad <- rep(NA, length(IDM_50cm_75ad[,1,1]))
+# 
+# #Record number of active molecules during each time step
+# for (i in 1:length(IDM_50cm_75ad[,1,1])) {
+#   a_50cm_75ad[i] <- length(which(IDM_50cm_75ad[i,,] == 1))
+# }
+# 
+# #create vector to record number of dormant molecules during each time step
+# d_50cm_75ad <- rep(NA, length(IDM_50cm_75ad[,1,1]))
+# 
+# #Record number of dormant molecules during each time step
+# for (i in 1:length(IDM_50cm_75ad[,1,1])) {
+#   d_50cm_75ad[i] <- length(which(IDM_50cm_75ad[i,,] == 2))
+# }
+# 
+# #150 catalytic molecules, 75 % active to dormant transition
+# IDM_150cm_75ad <- InDiMo(1000, 200, 150, 75, 5, 10, 5, 17, 6) 
+# #ts, ip, cm, ad, da, de, ds, br, ae
+# 
+# #create vector to record number of active molecules during each time step
+# a_150cm_75ad <- rep(NA, length(IDM_150cm_75ad[,1,1]))
+# 
+# #Record number of active molecules during each time step
+# for (i in 1:length(IDM_150cm_75ad[,1,1])) {
+#   a_150cm_75ad[i] <- length(which(IDM_150cm_75ad[i,,] == 1))
+# }
+# 
+# #create vector to record number of dormant molecules during each time step
+# d_150cm_75ad <- rep(NA, length(IDM_150cm_75ad[,1,1]))
+# 
+# #Record number of dormant molecules during each time step
+# for (i in 1:length(IDM_150cm_75ad[,1,1])) {
+#   d_150cm_75ad[i] <- length(which(IDM_150cm_75ad[i,,] == 2))
+# }
+# 
+# #250 catalytic molecules, 75 % active to dormant transition
+# IDM_250cm_75ad <- InDiMo(1000, 200, 250, 75, 5, 10, 5, 17, 6) 
+# #ts, ip, cm, ad, da, de, ds, br, ae
+# 
+# #create vector to record number of active molecules during each time step
+# a_250cm_75ad <- rep(NA, length(IDM_250cm_75ad[,1,1]))
+# 
+# #Record number of active molecules during each time step
+# for (i in 1:length(IDM_250cm_75ad[,1,1])) {
+#   a_250cm_75ad[i] <- length(which(IDM_250cm_75ad[i,,] == 1))
+# }
+# 
+# #create vector to record number of dormant molecules during each time step
+# d_250cm_75ad <- rep(NA, length(IDM_250cm_75ad[,1,1]))
+# 
+# #Record number of dormant molecules during each time step
+# for (i in 1:length(IDM_250cm_75ad[,1,1])) {
+#   d_250cm_75ad[i] <- length(which(IDM_250cm_75ad[i,,] == 2))
+# }
+# 
+# #350 catalytic molecules, 75 % active to dormant transition
+# IDM_350cm_75ad <- InDiMo(1000, 200, 350, 75, 5, 10, 5, 17, 6) 
+# #ts, ip, cm, ad, da, de, ds, br, ae
+# 
+# #create vector to record number of active molecules during each time step
+# a_350cm_75ad <- rep(NA, length(IDM_350cm_75ad[,1,1]))
+# 
+# #Record number of active molecules during each time step
+# for (i in 1:length(IDM_350cm_75ad[,1,1])) {
+#   a_350cm_75ad[i] <- length(which(IDM_350cm_75ad[i,,] == 1))
+# }
+# 
+# #create vector to record number of dormant molecules during each time step
+# d_350cm_75ad <- rep(NA, length(IDM_350cm_75ad[,1,1]))
+# 
+# #Record number of dormant molecules during each time step
+# for (i in 1:length(IDM_350cm_75ad[,1,1])) {
+#   d_350cm_75ad[i] <- length(which(IDM_350cm_75ad[i,,] == 2))
+# }
+# 
+# #10 catalytic molecules, 50 % active to dormant transition
+# IDM_10cm_50ad <- InDiMo(1000, 200, 10, 50, 5, 10, 5, 17, 6) 
+# #ts, ip, cm, ad, da, de, ds, br, ae
+# 
+# #create vector to record number of active molecules during each time step
+# a_10cm_50ad <- rep(NA, length(IDM_10cm_50ad[,1,1]))
+# 
+# #Record number of active molecules during each time step
+# for (i in 1:length(IDM_10cm_50ad[,1,1])) {
+#   a_10cm_50ad[i] <- length(which(IDM_10cm_50ad[i,,] == 1))
+# }
+# 
+# #create vector to record number of dormant molecules during each time step
+# d_10cm_50ad <- rep(NA, length(IDM_10cm_50ad[,1,1]))
+# 
+# #record number of dormant molecules during each time step
+# for (i in 1:length(IDM_10cm_50ad[,1,1])) {
+#   d_10cm_50ad[i] <- length(which(IDM_10cm_50ad[i,,] == 2))
+# }
+# 
+# #50 catalytic molecules, 50 % active to dormant transition
+# IDM_50cm_50ad <- InDiMo(1000, 200, 50, 50, 5, 10, 5, 17, 6) 
+# #ts, ip, cm, ad, da, de, ds, br, ae
+# 
+# #create vector to record number of active molecules during each time step
+# a_50cm_50ad <- rep(NA, length(IDM_50cm_50ad[,1,1]))
+# 
+# #Record number of active molecules during each time step
+# for (i in 1:length(IDM_50cm_50ad[,1,1])) {
+#   a_50cm_50ad[i] <- length(which(IDM_50cm_50ad[i,,] == 1))
+# }
+# 
+# #create vector to record number of dormant molecules during each time step
+# d_50cm_50ad <- rep(NA, length(IDM_50cm_50ad[,1,1]))
+# 
+# #Record number of dormant molecules during each time step
+# for (i in 1:length(IDM_50cm_50ad[,1,1])) {
+#   d_50cm_50ad[i] <- length(which(IDM_50cm_50ad[i,,] == 2))
+# }
+# 
+# #150 catalytic molecules, 50 % active to dormant transition
+# IDM_150cm_50ad <- InDiMo(1000, 200, 150, 50, 5, 10, 5, 17, 6) 
+# #ts, ip, cm, ad, da, de, ds, br, ae
+# 
+# #create vector to record number of active molecules during each time step
+# a_150cm_50ad <- rep(NA, length(IDM_150cm_50ad[,1,1]))
+# 
+# #Record number of active molecules during each time step
+# for (i in 1:length(IDM_150cm_50ad[,1,1])) {
+#   a_150cm_50ad[i] <- length(which(IDM_150cm_50ad[i,,] == 1))
+# }
+# 
+# #create vector to record number of dormant molecules during each time step
+# d_150cm_50ad <- rep(NA, length(IDM_150cm_50ad[,1,1]))
+# 
+# #Record number of dormant molecules during each time step
+# for (i in 1:length(IDM_150cm_50ad[,1,1])) {
+#   d_150cm_50ad[i] <- length(which(IDM_150cm_50ad[i,,] == 2))
+# }
+# 
+# #250 catalytic molecules, 50 % active to dormant transition
+# IDM_250cm_50ad <- InDiMo(1000, 200, 250, 50, 5, 10, 5, 17, 6) 
+# #ts, ip, cm, ad, da, de, ds, br, ae
+# 
+# #create vector to record number of active molecules during each time step
+# a_250cm_50ad <- rep(NA, length(IDM_250cm_50ad[,1,1]))
+# 
+# #Record number of active molecules during each time step
+# for (i in 1:length(IDM_250cm_50ad[,1,1])) {
+#   a_250cm_50ad[i] <- length(which(IDM_250cm_50ad[i,,] == 1))
+# }
+# 
+# #create vector to record number of dormant molecules during each time step
+# d_250cm_50ad <- rep(NA, length(IDM_250cm_50ad[,1,1]))
+# 
+# #Record number of dormant molecules during each time step
+# for (i in 1:length(IDM_250cm_50ad[,1,1])) {
+#   d_250cm_50ad[i] <- length(which(IDM_250cm_50ad[i,,] == 2))
+# }
+# 
+# #350 catalytic molecules, 50 % active to dormant transition
+# IDM_350cm_50ad <- InDiMo(1000, 200, 350, 50, 5, 10, 5, 17, 6) 
+# #ts, ip, cm, ad, da, de, ds, br, ae
+# 
+# #create vector to record number of active molecules during each time step
+# a_350cm_50ad <- rep(NA, length(IDM_350cm_50ad[,1,1]))
+# 
+# #Record number of active molecules during each time step
+# for (i in 1:length(IDM_350cm_50ad[,1,1])) {
+#   a_350cm_50ad[i] <- length(which(IDM_350cm_50ad[i,,] == 1))
+# }
+# 
+# #create vector to record number of dormant molecules during each time step
+# d_350cm_50ad <- rep(NA, length(IDM_350cm_50ad[,1,1]))
+# 
+# #Record number of dormant molecules during each time step
+# for (i in 1:length(IDM_350cm_50ad[,1,1])) {
+#   d_350cm_50ad[i] <- length(which(IDM_350cm_50ad[i,,] == 2))
+# }
+# 
+# #10 catalytic molecules, 25 % active to dormant transition
+# IDM_10cm_25ad <- InDiMo(1000, 200, 10, 25, 5, 10, 5, 17, 6) 
+# #ts, ip, cm, ad, da, de, ds, br, ae
+# 
+# #create vector to record number of active molecules during each time step
+# a_10cm_25ad <- rep(NA, length(IDM_10cm_25ad[,1,1]))
+# 
+# #Record number of Active molecules during each time step
+# for (i in 1:length(IDM_10cm_25ad[,1,1])) {
+#   a_10cm_25ad[i] <- length(which(IDM_10cm_25ad[i,,] == 1))
+# }
+# 
+# #create vector to record number of dormant molecules during each time step
+# d_10cm_25ad <- rep(NA, length(IDM_10cm_25ad[,1,1]))
+# 
+# #Record number of dormant molecules during each time step
+# for (i in 1:length(IDM_10cm_25ad[,1,1])) {
+#   d_10cm_25ad[i] <- length(which(IDM_10cm_25ad[i,,] == 2))
+# }
+# 
+# #50 catalytic molecules, 25 % active to dormant transition
+# IDM_50cm_25ad <- InDiMo(1000, 200, 50, 25, 5, 10, 5, 17, 6) 
+# #ts, ip, cm, ad, da, de, ds, br, ae
+# 
+# #create vector to record number of dormant molecules during each time step
+# a_50cm_25ad <- rep(NA, length(IDM_50cm_25ad[,1,1]))
+# 
+# #Record number of active molecules during each time step
+# for (i in 1:length(IDM_50cm_25ad[,1,1])) {
+#   a_50cm_25ad[i] <- length(which(IDM_50cm_25ad[i,,] == 1))
+# }
+# 
+# #create vector to record number of dormant molecules during each time step
+# d_50cm_25ad <- rep(NA, length(IDM_50cm_25ad[,1,1]))
+# 
+# #Record number of dormant molecules during each time step
+# for (i in 1:length(IDM_50cm_25ad[,1,1])) {
+#   d_50cm_25ad[i] <- length(which(IDM_50cm_25ad[i,,] == 2))
+# }
+# 
+# #150 catalytic molecules, 25 % active to dormant transition
+# IDM_150cm_25ad <- InDiMo(1000, 200, 150, 25, 5, 10, 5, 17, 6) 
+# #ts, ip, cm, ad, da, de, ds, br, ae
+# 
+# #create vector to record number of active molecules during each time step
+# a_150cm_25ad <- rep(NA, length(IDM_150cm_25ad[,1,1]))
+# 
+# #Record number of active molecules during each time step
+# for (i in 1:length(IDM_150cm_25ad[,1,1])) {
+#   a_150cm_25ad[i] <- length(which(IDM_150cm_25ad[i,,] == 1))
+# }
+# 
+# #create vector to record number of dormant molecules during each time step
+# d_150cm_25ad <- rep(NA, length(IDM_150cm_25ad[,1,1]))
+# 
+# #Record number of dormant molecules during each time step
+# for (i in 1:length(IDM_150cm_25ad[,1,1])) {
+#   d_150cm_25ad[i] <- length(which(IDM_150cm_25ad[i,,] == 2))
+# }
+# 
+# #250 catalytic molecules, 25 % active to dormant transition
+# IDM_250cm_25ad <- InDiMo(1000, 200, 250, 25, 5, 10, 5, 17, 6) 
+# #ts, ip, cm, ad, da, de, ds, br, ae
+# 
+# #create vector to record number of active molecules during each time step
+# a_250cm_25ad <- rep(NA, length(IDM_250cm_25ad[,1,1]))
+# 
+# #Record number of active molecules during each time step
+# for (i in 1:length(IDM_250cm_25ad[,1,1])) {
+#   a_250cm_25ad[i] <- length(which(IDM_250cm_25ad[i,,] == 1))
+# }
+# 
+# #create vector to record number of dormant molecules during each time step
+# d_250cm_25ad <- rep(NA, length(IDM_250cm_25ad[,1,1]))
+# 
+# #get number of dormant molecules 
+# for (i in 1:length(IDM_250cm_25ad[,1,1])) {
+#   d_250cm_25ad[i] <- length(which(IDM_250cm_25ad[i,,] == 2))
+# }
+# 
+# #350 catalytic molecules, 25 % active to dormant transition
+# IDM_350cm_25ad <- InDiMo(1000, 200, 350, 25, 5, 10, 5, 17, 6) 
+# #ts, ip, cm, ad, da, de, ds, br, ae
+# 
+# #Create vector to record number of active molecules during each time step
+# a_350cm_25ad <- rep(NA, length(IDM_350cm_25ad[,1,1]))
+# 
+# #Record number of active molecules during each time step
+# for (i in 1:length(IDM_350cm_25ad[,1,1])) {
+#   a_350cm_25ad[i] <- length(which(IDM_350cm_25ad[i,,] == 1))
+# }
+# 
+# #Create vector to record number of dormant molecules during each time step
+# d_350cm_25ad <- rep(NA, length(IDM_350cm_25ad[,1,1]))
+# 
+# #get number of dormant molecules 
+# for (i in 1:length(IDM_350cm_25ad[,1,1])) {
+#   d_350cm_25ad[i] <- length(which(IDM_350cm_25ad[i,,] == 2))
+# }
+# 
+# #Get mean active / total ratio for 90 % stochastic active to dormant transition
+# m10cm_90ad <- mean(a_10cm_90ad[3:150]/
+#                      (a_10cm_90ad[3:150]+d_10cm_90ad[3:150]))
+# m50cm_90ad <- mean(a_50cm_90ad[3:150]/
+#                      (a_50cm_90ad[3:150]+d_50cm_90ad[3:150]))
+# m150cm_90ad <- mean(a_150cm_90ad[3:150]/
+#                       (a_150cm_90ad[3:150]+d_150cm_90ad[3:150]))
+# m250cm_90ad <- mean(a_250cm_90ad[3:150]/
+#                       (a_250cm_90ad[3:150]+d_250cm_90ad[3:150]))
+# m350cm_90ad <- mean(a_350cm_90ad[3:150]/
+#                       (a_350cm_90ad[3:150]+d_350cm_90ad[3:150]))
+# 
+# #Get mean active / total ratio for 75 % stochastic active to dormant transition
+# m10cm_75ad <- mean(a_10cm_75ad[3:150]/
+#                      (a_10cm_75ad[3:150]+d_10cm_75ad[3:150]))
+# m50cm_75ad <- mean(a_50cm_75ad[3:150]/
+#                      (a_50cm_75ad[3:150]+d_50cm_75ad[3:150]))
+# m150cm_75ad <- mean(a_150cm_75ad[3:150]/
+#                       (a_150cm_75ad[3:150]+d_150cm_75ad[3:150]))
+# m250cm_75ad <- mean(a_250cm_75ad[3:150]/
+#                       (a_250cm_75ad[3:150]+d_250cm_75ad[3:150]))
+# m350cm_75ad <- mean(a_350cm_75ad[3:150]/
+#                       (a_350cm_75ad[3:150]+d_350cm_75ad[3:150]))
+# 
+# #Get mean active / total ratio for 50 % stochastic active to dormant transition
+# m10cm_50ad <- mean(a_10cm_50ad[3:150]/
+#                      (a_10cm_50ad[3:150]+d_10cm_50ad[3:150]))
+# m50cm_50ad <- mean(a_50cm_50ad[3:150]/
+#                      (a_50cm_50ad[3:150]+d_50cm_50ad[3:150]))
+# m150cm_50ad <- mean(a_150cm_50ad[3:150]/
+#                       (a_150cm_50ad[3:150]+d_150cm_50ad[3:150]))
+# m250cm_50ad <- mean(a_250cm_50ad[3:150]/
+#                       (a_250cm_50ad[3:150]+d_250cm_50ad[3:150]))
+# m350cm_50ad <- mean(a_350cm_50ad[3:150]/
+#                       (a_350cm_50ad[3:150]+d_350cm_50ad[3:150]))
+# 
+# #Get mean active / total ratio for 25 % stochastic active to dormant transition
+# m10cm_25ad <- mean(a_10cm_25ad[3:150]/
+#                      (a_10cm_25ad[3:150]+d_10cm_25ad[3:150]))
+# m50cm_25ad <- mean(a_50cm_25ad[3:150]/
+#                       (a_50cm_25ad[3:150]+d_50cm_25ad[3:150]))
+# m150cm_25ad <- mean(a_150cm_25ad[3:150]/
+#                       (a_150cm_25ad[3:150]+d_150cm_25ad[3:150]))
+# m250cm_25ad <- mean(a_250cm_25ad[3:150]/
+#                       (a_250cm_25ad[3:150]+d_250cm_25ad[3:150]))
+# m350cm_25ad <- mean(a_350cm_25ad[3:150]/
+#                       (a_350cm_25ad[3:150]+d_350cm_25ad[3:150]))
+# 
+# # combine means into vectors for plotting
+# v1 <- cbind(m10cm_90ad, m50cm_90ad, m150cm_90ad, m250cm_90ad, m350cm_90ad)
+# v2 <- cbind(m10cm_75ad, m50cm_75ad, m150cm_75ad, m250cm_75ad, m350cm_75ad)
+# v3 <- cbind(m10cm_50ad, m50cm_50ad, m150cm_50ad, m250cm_50ad, m350cm_50ad)
+# v4 <- cbind(m10cm_25ad, m50cm_25ad, m150cm_25ad, m250cm_25ad, m350cm_25ad)
+# 
+# # make a vector of the number of catalytic molecules
+# a <- cbind(10, 50, 150, 250, 350)
+# 
+# # combine all vectors into a table 
+# Rat <- rbind(a, v1, v2, v3, v4)
+# colnames(Rat) <- c("1", "2", "3", "4", "5")
+# row.names(Rat) <- c("a", "v1", "v2", "v3", "v4")
+# 
+# #export vectors to a csv file for ease of future use
+# # output the code to a csv file for future use
+# write.csv(Rat, "Ratio.csv")
+
+```
+
+
+# Make figure
+
+```{r}
+#read in "csv"
+Rat <- read.csv("Ratio.csv", row.names = 1)
+
+# png(filename="~/GitHub/astrodorm/figures/Fig4a.png",
+#     width = 1200, height = 1200, res = 96*2) 
+png(filename ="Fig4a.png", width = 1200, height = 1200, res = 96*2) 
+plot.new()
+
+# colors:
+
+#red_color <- col2rgb("red") / 255
+
+# Reduce intensity by 10%, 25%, and 50%
+#red_90 <- rgb(red_color[1] * 0.9, red_color[2] * 0.9, red_color[3] * 0.9)
+#red_75 <- rgb(red_color[1] * 0.75, red_color[2] * 0.75, red_color[3] * 0.75)
+#red_50 <- rgb(red_color[1] * 0.5, red_color[2] * 0.5, red_color[3] * 0.5)
+#red_25 <- rgb(red_color[1] * 0.25, red_color[2] * 0.25, red_color[3] * 0.25)
+
+# Reduce transparency by 10%, 25%, 50%, 75%
+red_90 <- rgb(1, 0, 0, alpha = 0.9)
+red_75 <- rgb(1, 0, 0, alpha = 0.75)
+red_50 <- rgb(1, 0, 0, alpha = 0.5)
+red_25 <- rgb(1, 0, 0, alpha = 0.25)
+
+# 90% transition into dormancy
+par(mar = c(7, 7, 5, 7))
+plot(as.numeric(Rat[1,]), as.numeric(Rat[2,]), xlim = c(-10, 440), 
+     ylim = c(-0.01, 1.1), type = "b", lty = 3, col = "black", 
+     lwd = 2, ylab = "", xlab = "", cex.lab = 1.5, las = 1, yaxt = "n", 
+     xaxt = "n", pch = 21, cex = 2, bg = red_90); box(lwd = 2); lines(as.numeric(Rat[1,]), as.numeric(Rat[3,]), pch = 21, type = "b", col = "black", lwd = 2, lty = 3, cex = 2, bg = red_75); lines(as.numeric(Rat[1,]) , as.numeric(Rat[4,]), pch = 21, type = "b", col = "black", lwd = 2, lty = 3, cex = 2, bg = red_50); lines(as.numeric(Rat[1,]), as.numeric(Rat[5,]), pch = 21, type = "b", col = "black", lwd = 2, lty = 3, cex = 2, bg = red_25); axis(side = 2, lwd.ticks = 2, cex.axis = 1.25, las = 1, mgp = c(1, 1, 0), labels = c("0.0", "0.5", "1.0"), at = c(0, 0.5, 1.0)); axis(side = 4, labels = F, lwd.ticks = 2, las = 1, cex.axis = 1, at = c(0, 0.5, 1.0)); axis(side = 1, lwd.ticks = 2, cex.axis = 1.25, las = 1, mgp = c(1, 1, 0),
+     labels = c("0", "100", "200", "300", "400"), at = c(0, 100, 200, 300, 400)); axis(side = 3, labels = F, lwd.ticks = 2, las = 1, cex.axis = 1, at = c(0, 100, 200, 300, 400)); mtext(expression('Activity ratio (' * italic(A[a]) / italic(A[i]) * ')'), side = 2, outer = TRUE, cex = 1.5, line = -3, adj = 0.55); mtext(expression('Catalyst abundance (' * italic(B) * ')'), side = 1, outer = TRUE, cex = 1.5,line = -3, adj = 0.5);mtext("Dormancy", side = 3, line = -1.3, at = 390, cex = 1); mtext("initiation", side = 3, line = -2.3, at = 390, cex = 1); mtext(expression('(' * italic(A)[italic(a)] %->% italic(A)[italic(i)] * ')'), side = 3, line = -3.3, at = 390, cex = 0.75); mtext("25%", side = 3, line = -5, at = 395, cex = 0.9); mtext("50%", side = 3, line = -6.5, at = 395, cex = 0.9); mtext("75%", side = 3, line = -7.8, at = 395, cex = 0.9); mtext("90%", side = 3, line = -8.8, at = 395, cex = 0.9)
+
+
+
+# 75% transition into dormancy:
+#lines(a, v2, pch = 21, type = "b", col = "red", lwd = 2, lty = 3, cex = 2)
+# lines(as.numeric(Rat[1,]), as.numeric(Rat[3,]), pch = 21, type = "b", 
+#       col = "black", lwd = 2, lty = 3, cex = 2, bg = red_75)
+
+# 50% transition into dormancy:
+#lines(a, v3, pch = 21, type = "b", col = "orange", lwd = 2, lty = 3, cex = 2)
+# lines(Rat[1,], Rat[4,], pch = 21, type = "b", col = "black", lwd = 2, lty = 3, cex = 2, bg = red_50)
+
+# 25% transition into dormancy:
+#lines(a, v4, pch = 21, type = "b", col = "blue", lwd = 2, lty = 3, cex = 2)
+# lines(Rat[1,], Rat[5,], pch = 21, type = "b", col = "black", lwd = 2, lty = 3, cex = 2, bg = red_25)
+
+
+# Add axis ticks and labels
+# axis(side = 2, lwd.ticks = 2, cex.axis = 1.25, las = 1, mgp = c(1, 1, 0),
+#      labels = c("0.0", "0.5", "1.0"), at = c(0, 0.5, 1.0))
+
+# axis(side = 4, labels = F, lwd.ticks = 2, las = 1, cex.axis = 1, 
+#      at = c(0, 0.5, 1.0))
+
+# axis(side = 1, lwd.ticks = 2, cex.axis = 1.25, las = 1, mgp = c(1, 1, 0),
+#      labels = c("0", "100", "200", "300", "400"), at = c(0, 100, 200, 300, 400))
+
+# axis(side = 3, labels = F, lwd.ticks = 2, las = 1, cex.axis = 1, 
+#      at = c(0, 100, 200, 300, 400))
+
+# Add axis labels
+
+# mtext(expression('Activity ratio (' * italic(A[a]) / italic(A[i]) * ')'), side = 2, outer = TRUE, cex = 1.5, 
+#       line = -3, adj = 0.55)
+
+# mtext(expression('Catalyst abundance (' * italic(B) * ')'), side = 1, outer = TRUE, cex = 1.5, 
+#       line = -3, adj = 0.5)
+
+#mtext(expression(italic(A)[italic(a)] %->% italic(A)[italic(i)]), side = 3, line = -4, at = 375, cex = 1.25)
+# mtext("Dormancy", side = 3, line = -1.3, at = 390, cex = 1)
+# mtext("initiation", side = 3, line = -2.3, at = 390, cex = 1)
+
+# mtext(expression('(' * italic(A)[italic(a)] %->% italic(A)[italic(i)] * ')'), 
+#       side = 3, line = -3.3, at = 390, cex = 0.75)
+# mtext("25%", side = 3, line = -5, at = 395, cex = 0.9)
+# mtext("50%", side = 3, line = -6.5, at = 395, cex = 0.9)
+# mtext("75%", side = 3, line = -7.8, at = 395, cex = 0.9)
+# mtext("90%", side = 3, line = -8.8, at = 395, cex = 0.9)
+
+
+#mtext(expression("decay = 3%"), side = 4, line = -1.5, at = 35, cex = 1.25, las = 2)
+
+# Close plot device (completes writing of file)
+#dev.off()
+while (!is.null(dev.list()))  dev.off()
+graphics.off()
+
+# Shows plot in R console window
+#img1 <- readPNG("~/GitHub/astrodorm/figures/Fig4a.png")
+img1 <- readPNG("Fig4a.png")
+grid.raster(img1)
+```
+# Now Run persistance modeling instances; 
+# This code is commented out. It takes about 2 hours to run. 
+# This block writes a csv file, "AverageShielding.csv" which is run in the next 
+# chunk
+```{r}
+
+# Run the model 99 times with 1000 time steps, 200 autocatalytic 
+# molecules, 50 catalytic molecules, 50 % stochastic active to dormant 
+# transition, 5 % stochastic dormant to active transition, 15 % 
+# death rate, 7 dormancy stabilizer (divides death rate by 7), 21 % birth 
+# rate, 6 autocatalytic enhancement (multiplies birth rate by 6)
+
+# #50ad 15de 8ds -  99 times
+# IDM_7 <- array(NA, dim = c(99, 1000, 20, 20))
+# 
+# for (i in 1:99) {
+#   IDM_7[i,,,] <- InDiMo(1000, 200, 50, 50, 5, 15, 7, 21, 6)
+#   print(i)
+# }
+
+#ts, ip, cm, ad, da, de, ds, br, ae
+
+# a_7 <- array(NA, dim = c(99, 1000))
+# d_7 <- array(NA, dim = c(99, 1000))
+# 
+# for (i in 1:length(IDM_7[,1,1,1]))  {
+#   for (j in 1:length(IDM_7[1,,1,1])) {
+#     a_7[i,j] <- length(which(IDM_7[i,j,,] == 1))
+#     d_7[i,j] <- length(which(IDM_7[i,j,,] == 2))
+#   }
+#   print(i)
+# }
+# 
+# apd_7_m <- rep(NA, 1000)
+# apd_7_sd <- rep(NA, 1000)
+# 
+# for (i in 1:1000){
+#   apd_7_m[i] <- mean(a_7[,i]+d_7[,i])
+#   apd_7_sd[i] <- sd(a_7[,i]+d_7[,i])
+# }
+
+
+
+# Run the model 99 times with 1000 time steps, 200 autocatalytic 
+# molecules, 50 catalytic molecules, 50 % stochastic active to dormant 
+# transition, 5 % stochastic dormant to active transition, 15 % 
+# death rate, 15 dormancy stabilizer (divides death rate by 15), 21 % birth 
+# rate, 6 autocatalytic enhancement (multiplies birth rate by 6)
+
+# #50ad 15de 15ds -  99 times 
+# IDM_15 <- array(NA, dim = c(99, 1000, 20, 20))
+# 
+# for (i in 1:99) {
+#   IDM_15[i,,,] <- InDiMo(1000, 200, 50, 50, 5, 15, 15, 21, 6)
+#   print(i)
+# }
+
+#ts, ip, cm, ad, da, de, ds, br, ae
+
+# a_15 <- array(NA, dim = c(99, 1000))
+# d_15 <- array(NA, dim = c(99, 1000))
+# 
+# for (i in 1:length(IDM_15[,1,1,1]))  {
+#   for (j in 1:length(IDM_15[1,,1,1])) {
+#     a_15[i,j] <- length(which(IDM_15[i,j,,] == 1))
+#     d_15[i,j] <- length(which(IDM_15[i,j,,] == 2))
+#   }
+#   print(i)
+# }
+# 
+# apd_15_m <- rep(NA, 1000)
+# apd_15_sd <- rep(NA, 1000)
+# 
+# for (i in 1:1000){
+#   apd_15_m[i] <- mean(a_15[,i]+d_15[,i])
+#   apd_15_sd[i] <- sd(a_15[,i]+d_15[,i])
+# }
+
+# Run the model 99 times with 1000 time steps, 200 autocatalytic 
+# molecules, 50 catalytic molecules, 50 % stochastic active to dormant 
+# transition, 5 % stochastic dormant to active transition, 15 % 
+# death rate, 5 dormancy stabilizer (divides death rate by 5), 21 % birth 
+# rate, 6 autocatalytic enhancement (multiplies birth rate by 6)
+
+# #50ad 15de 5ds -  99 times 
+# IDM_5 <- array(NA, dim = c(99, 1000, 20, 20))
+# 
+# for (i in 1:99) {
+#   IDM_5[i,,,] <- InDiMo(1000, 200, 50, 50, 5, 15, 5, 21, 6)
+#   print(i)
+# }
+
+#ts, ip, cm, ad, da, de, ds, br, ae
+
+# a_5 <- array(NA, dim = c(99, 1000))
+# d_5 <- array(NA, dim = c(99, 1000))
+# 
+# for (i in 1:length(IDM_5[,1,1,1]))  {
+#   for (j in 1:length(IDM_5[1,,1,1])) {
+#     a_5[i,j] <- length(which(IDM_5[i,j,,] == 1))
+#     d_5[i,j] <- length(which(IDM_5[i,j,,] == 2))
+#   }
+#   print(i)
+# }
+# 
+# apd_5_m <- rep(NA, 1000)
+# apd_5_sd <- rep(NA, 1000)
+# 
+# for (i in 1:1000){
+#   apd_5_m[i] <- mean(a_5[,i]+d_5[,i])
+#   apd_5_sd[i] <- sd(a_5[,i]+d_5[,i])
+# }
+
+# combine the results in a matrix; the above code takes about 2 hours to 
+# run
+# PM <- cbind(apd_15_m, apd_15_sd, apd_7_m, apd_7_sd, apd_5_m, apd_5_sd)
+# 
+# # output the code to a csv file for future use
+# write.csv(PM, "AverageShielding.csv")
+
+
+```
+
+
+# Load OD data and plot it
+
+```{r}
+#AS <- read.csv("data/AverageShielding.csv")
+AS <- read.csv("AverageShielding.csv")
+
+sAS <- AS[c(1, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000),]
+x <- c(1, 100, 200, 300, 400, 500, 600, 700, 800, 900, 1000)
+
+
+# Make figure showing persistance of molecules with varying protection in
+# dormancy
+
+
+# png(filename="~/GitHub/astrodorm/figures/Fig4b.png",
+#     width = 1200, height = 1200, res = 96*2) 
+png(filename="Fig4b.png",
+    width = 1200, height = 1200, res = 96*2) 
+plot.new()
+
+
+# Reduce transparency by 10%, 25%, 50%, 75%
+blue_3 <- rgb(0, 0, 1, alpha = 0.8)
+blue_2 <- rgb(0, 0, 1, alpha = 0.4)
+blue_1 <- rgb(0, 0, 1, alpha = 0.1)
+
+# 2% decay
+par(mar = c(7, 7, 5, 7))
+plot(x, sAS[,4], xlim = c(-50, 1050), ylim = c(0.02, 420), type = "b", 
+     lty = 3, col = "black", lwd = 2, ylab = "", xlab = "", log = "y",
+     cex.lab = 1.5, las = 1, yaxt = "n", xaxt = "n", pch = 21, cex = 2, bg = blue_2); box(lwd = 2); points(x, sAS[,2], type = "b", pch = 21, col = "black", cex = 2, lwd = 2, lty = 3, bg = blue_1); points(x, sAS[,6], type = "b", pch = 21, col = "black", cex = 2, lwd = 2, lty = 3, bg = blue_3); axis(2, at = c(0.1, 1, 10, 100), cex.axis = 1.25, labels = expression(10^-1, 10^0, 10^1, 10^2), las = 1); axis(4, labels = F, lwd.ticks = 2, las = 1, cex.axis = 1.25, at = c(10^-1, 10^0, 10^1, 10^2)); axis(side = 1, lwd.ticks = 2, cex.axis = 1.25, las = 1, mgp = c(1, 1, 0), labels = c("0", "500", "1000"), at = c(0, 500, 1000)); axis(side = 3, labels = F, lwd.ticks = 2, las = 1, cex.axis = 1, at = c(0, 500, 1000)); mtext(expression('Total abundance (' * italic(A[a]) + italic(A[i]) * ')'), side = 2, outer = TRUE, cex = 1.5, line = -3, adj = 0.55); mtext('Time', side = 1, outer = TRUE, cex = 1.5, line = -3, adj = 0.5); mtext(expression(italic(d) == 1 * "%"), side = 4, line = -5, at = 300, cex = 1.25, las = 2); mtext(expression(italic(d) == 2 * "%"), side = 4, line = -5, at = 1, cex = 1.25, las = 2); mtext(expression(italic(d) == 3 * "%"), side = 4, line = -12, at = 0.05, cex = 1.25, las = 2)
+
+
+
+
+#segments(x, sAS[,4]-sAS[,5], x ,sAS[,4]+sAS[,5], col = "black", lwd = 2)
+
+# 1% decay
+# points(x, sAS[,2], type = "b", pch = 21, col = "black", cex = 2, lwd = 2, lty = 3, bg = blue_1)
+#segments(x, sAS[,2]-sAS[,3], x, sAS[,2]+sAS[,3], col = "black", lwd = 2)
+
+# 3% decay
+# points(x, sAS[,6], type = "b", pch = 21, col = "black", cex = 2, lwd = 2, lty = 3, bg = blue_3)
+#segments(x, sAS[,6]-sAS[,7], x, sAS[,6]+sAS[,7], col = "black", lwd = 2)
+
+# # Add axis ticks and labels
+# axis(2, at = c(0.1, 1, 10, 100), cex.axis = 1.25,
+#      labels = expression(10^-1, 10^0, 10^1, 10^2), las = 1)
+# 
+# axis(4, labels = F, lwd.ticks = 2, las = 1, cex.axis = 1.25,
+#      at = c(10^-1, 10^0, 10^1, 10^2))
+
+# axis(side = 1, lwd.ticks = 2, cex.axis = 1.25, las = 1, mgp = c(1, 1, 0),
+#      labels = c("0", "500", "1000"), at = c(0, 500, 1000))
+# 
+# axis(side = 3, labels = F, lwd.ticks = 2, las = 1, cex.axis = 1, 
+#      at = c(0, 500, 1000))
+
+# Add axis labels
+# 
+# mtext(expression('Total abundance (' * italic(A[a]) + italic(A[i]) * ')'), side = 2, outer = TRUE, cex = 1.5, 
+#       line = -3, adj = 0.55)
+# 
+# mtext('Time', side = 1, outer = TRUE, cex = 1.5, 
+#       line = -3, adj = 0.5)
+# 
+# mtext(expression(italic(d) == 1 * "%"), side = 4, line = -5, at = 300, cex = 1.25, las = 2)
+# mtext(expression(italic(d) == 2 * "%"), side = 4, line = -5, at = 1, cex = 1.25, las = 2)
+# mtext(expression(italic(d) == 3 * "%"), side = 4, line = -12, at = 0.05, cex = 1.25, las = 2)
+
+
+#mtext(expression("decay = 3%"), side = 4, line = -1.5, at = 35, cex = 1.25, las = 2)
+
+# Close plot device (completes writing of file)
+#dev.off()
+while (!is.null(dev.list()))  dev.off()
+graphics.off()
+
+# Shows plot in R console window
+#img2 <- readPNG("~/GitHub/astrodorm/figures/Fig4b.png")
+img2 <- readPNG("Fig4b.png")
+grid.raster(img2)
+```
